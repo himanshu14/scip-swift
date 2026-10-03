@@ -51,14 +51,21 @@ enum SymbolKindMapping {
       return .enumMember
     case .instanceMethod:
       return .method
+    // CALLABLE-PARITY: a static/class method and an initializer are both callable members with
+    // bodies that participate in the call graph. SCIP has finer kinds (`staticMethod`,
+    // `constructor`), but graph consumers that build call hierarchies key on the general callable
+    // kinds (Function/Method) and DROP the finer ones — scip-java does the same for Java/Kotlin
+    // (constructors and statics land as Method), so emitting `.method` here is what gives iOS the
+    // same node/edge coverage as Android. The symbol descriptor still distinguishes them
+    // (`#foo().` vs an `init` descriptor) for any consumer that needs the distinction.
     case .classMethod, .staticMethod:
-      return .staticMethod
+      return .method
     case .instanceProperty:
       return .property
     case .classProperty, .staticProperty:
       return .staticProperty
     case .constructor:
-      return .constructor
+      return .method
     case .destructor, .conversionFunction:
       return .method
     case .parameter:
