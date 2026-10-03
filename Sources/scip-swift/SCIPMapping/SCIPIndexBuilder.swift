@@ -430,13 +430,23 @@ struct SCIPIndexBuilder {
       if isTestTargetDocument {
         scipOccurrence.symbolRoles |= Int32(Scip_SymbolRole.test.rawValue)
       }
-      scipOccurrence.singleLineRange = PositionMapping.singleLineRange(
+      let singleLineRange = PositionMapping.singleLineRange(
         location: occurrence.location,
         displayName: symbol.name,
         exactEndColumn: refiner?
           .exactEndColumn(line: occurrence.location.line, utf8Column: occurrence.location.utf8Column)
           .map(Int32.init)
       )
+      scipOccurrence.singleLineRange = singleLineRange
+      // RANGE-05: also populate the DEPRECATED packed `range` (field 1), kept in sync with
+      // single_line_range (field 8) per the SCIP spec. The structured single_line_range is the
+      // modern form, but scip 0.7.x-era consumers (doc-linter reads `occ.range.first()` for every
+      // occurrence's line) don't know field 8 and get an empty range — so every def line and every
+      // call-site ref line collapses to 0, which silently breaks all position-based graph edges.
+      // Single-line packed form is [line, startCharacter, endCharacter].
+      scipOccurrence.range = [
+        singleLineRange.line, singleLineRange.startCharacter, singleLineRange.endCharacter,
+      ]
       // RANGE-04: on a callable DEFINITION, attach the full decl body span as SCIP `enclosing_range`.
       // IndexStoreDB gives only the anchor point; without this field a downstream consumer that
       // attributes a call to "the function whose enclosing_range contains the call site" (doc-linter's
