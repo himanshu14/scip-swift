@@ -14,6 +14,7 @@ struct SwiftSyntaxRefiner {
 
   private let tokenEndColumns: [Int: [Int: Int]]
   private let docComments: [Int: [Int: String]]
+  private let enclosingBodyRanges: [Int: [Int: [Int32]]]
   private let source: String
   private let syntaxTree: SourceFileSyntax
 
@@ -54,8 +55,31 @@ struct SwiftSyntaxRefiner {
       }
     }
 
+    // RANGE-04: enclosing body span per callable declaration (function/method/init/deinit/subscript), keyed by the def
+    // anchor (name/keyword token) position — the SAME key shape as `docComments` (1-based line, 0-based utf8 col), which
+    // is where IndexStoreDB lands the definition occurrence. doc-linter attributes a reference occurrence (a call) to
+    // the function whose SCIP `enclosing_range` contains it; without this field it falls back to a "next function-def
+    // line" heuristic that misfires on Swift (dense accessors/nested decls fragment the spans), attributing <10% of
+    // internal calls. Values are SCIP 0-based [startLine, startCol, endLine, endCol].
+    var encl: [Int: [Int: [Int32]]] = [:]
+    for decl in Self.declarations(in: Syntax(tree)) {
+      guard let anchor = Self.callableAnchorToken(of: decl) else { continue }
+      let startOffset = decl.positionAfterSkippingLeadingTrivia.utf8Offset
+      let endOffset = decl.endPositionBeforeTrailingTrivia.utf8Offset
+      let startLine = Self.line(ofOffset: startOffset, lineStarts: lineStarts)
+      let endLine = Self.line(ofOffset: endOffset, lineStarts: lineStarts)
+      let anchorOffset = anchor.positionAfterSkippingLeadingTrivia.utf8Offset
+      let anchorLine = Self.line(ofOffset: anchorOffset, lineStarts: lineStarts)
+      let anchorCol = anchorOffset - lineStarts[anchorLine - 1]
+      encl[anchorLine, default: [:]][anchorCol] = [
+        Int32(startLine - 1), Int32(startOffset - lineStarts[startLine - 1]),
+        Int32(endLine - 1), Int32(endOffset - lineStarts[endLine - 1]),
+      ]
+    }
+
     tokenEndColumns = map
     docComments = docs
+    enclosingBodyRanges = encl
     self.source = source
     self.syntaxTree = tree
   }
@@ -80,6 +104,15 @@ struct SwiftSyntaxRefiner {
   func documentation(line: Int, utf8Column: Int) -> String? {
     guard line >= 1, utf8Column >= 1 else { return nil }
     return docComments[line]?[utf8Column - 1]
+  }
+
+  /// The SCIP `enclosing_range` (0-based [startLine, startCol, endLine, endCol]) of the callable
+  /// declaration whose definition anchor lands at this IndexStoreDB position. Same 1-based-in /
+  /// 0-based-map lookup contract as `exactEndColumn`; nil when no callable def anchors here (the
+  /// caller then emits no enclosing_range and doc-linter keeps its heuristic fallback).
+  func enclosingRange(line: Int, utf8Column: Int) -> [Int32]? {
+    guard line >= 1, utf8Column >= 1 else { return nil }
+    return enclosingBodyRanges[line]?[utf8Column - 1]
   }
 
   private static func declarations(in node: Syntax) -> [DeclSyntax] {
@@ -117,6 +150,27 @@ struct SwiftSyntaxRefiner {
       return enumCase.elements.map(\.name)
     }
     return []
+  }
+
+  /// The token IndexStoreDB anchors the DEFINITION occurrence on for a callable declaration — the
+  /// same token `enclosing_range` must be keyed by, so a reference's caller resolves to it. Only
+  /// callables get an enclosing_range (doc-linter attributes CALLS to the enclosing function): a
+  /// func's name, an initializer's `init`, a deinit's `deinit`, a subscript's `subscript`. Returns
+  /// nil for every other decl kind (types, vars, extensions) — they are not call containers.
+  private static func callableAnchorToken(of decl: DeclSyntax) -> TokenSyntax? {
+    if let function = decl.as(FunctionDeclSyntax.self) {
+      return function.name
+    }
+    if let initializer = decl.as(InitializerDeclSyntax.self) {
+      return initializer.initKeyword
+    }
+    if let deinitializer = decl.as(DeinitializerDeclSyntax.self) {
+      return deinitializer.deinitKeyword
+    }
+    if let subscriptDecl = decl.as(SubscriptDeclSyntax.self) {
+      return subscriptDecl.subscriptKeyword
+    }
+    return nil
   }
 
   /// Doc trivia attaches to the declaration's first token (an attribute list intercepts it),

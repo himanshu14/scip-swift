@@ -437,6 +437,19 @@ struct SCIPIndexBuilder {
           .exactEndColumn(line: occurrence.location.line, utf8Column: occurrence.location.utf8Column)
           .map(Int32.init)
       )
+      // RANGE-04: on a callable DEFINITION, attach the full decl body span as SCIP `enclosing_range`.
+      // IndexStoreDB gives only the anchor point; without this field a downstream consumer that
+      // attributes a call to "the function whose enclosing_range contains the call site" (doc-linter's
+      // caller attribution) has to fall back to a next-def-line heuristic that misfires on Swift's
+      // dense/fragmented defs. The refiner keys the span by the same anchor (line, utf8Column) the
+      // store reports, so a nil here (non-callable def, or a def the refiner couldn't parse) just
+      // leaves the field empty — never wrong.
+      if scipOccurrence.symbolRoles & Int32(Scip_SymbolRole.definition.rawValue) != 0,
+        let enclosing = refiner?.enclosingRange(
+          line: occurrence.location.line, utf8Column: occurrence.location.utf8Column)
+      {
+        scipOccurrence.enclosingRange = enclosing
+      }
       document.occurrences.append(scipOccurrence)
 
       var symbolInformation = Scip_SymbolInformation()
